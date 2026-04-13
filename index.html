@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cosmic AI Chat</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+
+<div class="container py-5">
+    <div class="row justify-content-center">
+        <div id="setup-step" class="col-md-8 card p-4 shadow-lg">
+            <h2 class="text-center text-primary mb-4">✨ Initializing Your Cosmic Profile</h2>
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label class="form-label">Full Name</label>
+                    <input type="text" id="userName" class="form-control" placeholder="John Doe">
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Birth City</label>
+                    <input type="text" id="userLoc" class="form-control" placeholder="Mumbai, India">
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Date of Birth</label>
+                    <input type="date" id="userDob" class="form-control">
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Time of Birth</label>
+                    <input type="time" id="userTob" class="form-control">
+                </div>
+            </div>
+
+            <div class="text-center mt-5">
+                <button id="start-chat" class="btn btn-primary px-4 py-2 fw-bold">
+                    OPEN CELESTIAL PORTAL
+                </button>
+            </div>
+        </div>
+
+        <div id="chat-step" class="col-md-10 card p-4 shadow-lg hidden">
+            <!-- Avatar Video Section -->
+            <div id="avatar-section" class="text-center mb-3">
+                <div class="avatar-wrapper">
+                    <video id="avatar-video" autoplay muted loop playsinline>
+                        <source src="./avatar.mp4" type="video/mp4">
+                    </video>
+                </div>
+            </div>
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h4 class="text-info m-0">🌟 Cosmic Dialogue</h4>
+                <button id="speak-toggle" class="btn btn-sm btn-outline-warning">🔊 Auto-Speak: ON</button>
+            </div>
+            
+            <div id="chat-container" class="d-flex flex-column mb-3">
+                <div class="msg ai-msg">The stars are aligned. How can I guide you today?</div>
+            </div>
+
+            <div class="input-group">
+                <button id="start-record" class="btn btn-outline-info">🎤</button>
+                <input type="text" id="userQuestion" class="form-control" placeholder="Ask about your destiny...">
+                <button id="send-btn" class="btn btn-primary px-4">Send</button>
+            </div>
+            <small id="voice-status" class="text-info mt-1"></small>
+        </div>
+    </div>
+</div>
+
+<script src="./script.js" type="module"></script>
+</body>
+</html>

@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Astrology Builder</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            background: #121212;
+            color: #e0e0e0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+    
+        .card {
+            border: none;
+            border-radius: 15px;
+            background: #1e1e1e;
+        }
+    
+        .form-control:focus {
+            background: #333;
+            color: #fff;
+            border-color: #0d6efd;
+            box-shadow: none;
+        }
+    
+        .reading-box {
+            border-left: 4px solid #0d6efd;
+            background: #252525;
+            min-height: 100px;
+        }
+    
+        .mic-active {
+            border-color: #ff4757 !important;
+            color: #ff4757 !important;
+            box-shadow: 0 0 10px rgba(255, 71, 87, 0.3);
+        }
+
+        .form-label{
+            color: #fff;
+        }
+
+        .form-control::placeholder {
+            color: #a5a4a4;
+        }
+
+        .form-control {
+            background: #2d2d2d;
+            border: 1px solid #444;
+            color: #b6b6b6;
+        }
+
+        input[type="date"]::-webkit-calendar-picker-indicator {
+            filter: invert(1);
+            opacity: 0.6; 
+            cursor: pointer;
+        }
+
+        input[type="time"]::-webkit-calendar-picker-indicator {
+            filter: invert(1);
+            opacity: 0.6; 
+            cursor: pointer;
+        }
+
+        .reading-box{
+            color: #fff;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container py-5">
+    <div class="row justify-content-center">
+        <div class="col-md-10 card p-4 shadow-lg">
+            <h2 class="text-center text-primary mb-4">✨ Cosmic AI Guide</h2>
+            
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label class="form-label">Full Name</label>
+                    <input type="text" id="userName" class="form-control" placeholder="Enter Full Name">
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Birth Location</label>
+                    <input type="text" id="userLoc" class="form-control" placeholder="City, Country">
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Date of Birth</label>
+                    <input type="date" id="userDob" class="form-control">
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Time of Birth</label>
+                    <input type="time" id="userTob" class="form-control">
+                </div>
+            </div>
+
+            <div class="mt-4">
+                <label class="form-label">Ask Your Question (Speak or Type)</label>
+                <div class="input-group mb-2">
+                    <button id="start-record" class="btn btn-outline-info" title="Voice Input">🎤</button>
+                    <textarea id="userQuestion" class="form-control" rows="2" placeholder="What do the stars say about my career?"></textarea>
+                </div>
+                <small id="voice-status" class="text-info"></small>
+            </div>
+
+            <button id="get-reading" class="btn btn-primary w-100 py-2 mt-3 fw-bold">Consult the Stars</button>
+            
+            <div id="output" class="mt-4 d-none">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <h5 class="text-info m-0">Your Celestial Reading:</h5>
+                    <button id="speak-reading" class="btn btn-sm btn-outline-light">🔊 Listen</button>
+                </div>
+                <div id="reading-text" class="p-3 reading-box rounded" style="white-space: pre-wrap;"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script type="module">
+    // --- TESTING CONFIG ---
+    const API_KEY = "AIzaSyAiULQ6D6HoLVMYjf45jGmgeiuEzpV8eMc";
+    const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${API_KEY}`;
+
+    const recordBtn = document.getElementById('start-record');
+    const questionInput = document.getElementById('userQuestion');
+    const statusMsg = document.getElementById('voice-status');
+    const readingText = document.getElementById('reading-text');
+
+    // 1. Voice-to-Text (Speech Recognition)
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (SpeechRecognition) {
+        const recognition = new SpeechRecognition();
+
+        recordBtn.onclick = () => {
+            recognition.start();
+            recordBtn.classList.add('mic-active');
+            statusMsg.innerText = "Listening to the universe...";
+        };
+
+        recognition.onresult = (event) => {
+            const transcript = event.results[0][0].transcript;
+            questionInput.value = transcript; // Put voice result into textarea
+            recordBtn.classList.remove('mic-active');
+            statusMsg.innerText = "";
+        };
+
+        recognition.onerror = () => {
+            recordBtn.classList.remove('mic-active');
+            statusMsg.innerText = "Error capturing voice.";
+        };
+    }
+
+    // 2. Text-to-Speech (Speak Option)
+    document.getElementById('speak-reading').onclick = () => {
+        const utterance = new SpeechSynthesisUtterance(readingText.innerText);
+        utterance.rate = 0.9; // Slightly slower for a more mystical vibe
+        utterance.pitch = 1;
+        window.speechSynthesis.speak(utterance);
+    };
+
+    // 3. AI Fetch Logic
+    document.getElementById('get-reading').onclick = async () => {
+        const submitBtn = document.getElementById('get-reading');
+        const readingText = document.getElementById('reading-text');
+
+        submitBtn.disabled = true;
+        submitBtn.innerText = "Aligning Planets...";
+
+        const promptText = `User: ${document.getElementById('userName').value}, 
+                        Location: ${document.getElementById('userLoc').value}, 
+                        Question: ${document.getElementById('userQuestion').value}`;
+
+        const finalPrompt = `
+        You are a professional, mystical astrologer having a 1-on-1 conversation with a client. 
+        Based on these details: ${promptText}
+        
+        RULES:
+        1. Speak directly to the user (e.g. "I see great things for you...").
+        2. Do NOT use any Markdown (No #, No *, No **).
+        3. Use only plain text and natural paragraphs.
+        4. Provide a warm, insightful, and conversational reading.
+    `;
+
+        try {
+            const response = await fetch(API_URL, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    contents: [{
+                        parts: [{ text: finalPrompt }]
+                    }]
+                })
+            });
+
+            if (!response.ok) {
+                // This captures the exact error message from Google (e.g., "Invalid API Key")
+                const errorData = await response.json();
+                console.error("Google API Error:", errorData);
+                throw new Error(errorData.error?.message || "Unknown API Error");
+            }
+
+            const data = await response.json();
+            const result = data.candidates[0].content.parts[0].text;
+
+            document.getElementById('output').classList.remove('d-none');
+            readingText.innerText = result;
+
+        } catch (error) {
+            console.error("Fetch Error:", error);
+            alert("Connection Failed: " + error.message);
+        } finally {
+            submitBtn.disabled = false;
+            submitBtn.innerText = "Consult the Stars";
+        }
+    };
+</script>
+
+</body>
+</html>
