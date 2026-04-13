@@ -1,6 +1,9 @@
 export async function handler(event) {
+    console.log("Function triggered");
+
     try {
-        const { contents } = JSON.parse(event.body);
+        const body = JSON.parse(event.body);
+        console.log("Incoming body:", body);
 
         const response = await fetch(
             `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${process.env.GEMINI_API_KEY}`,
@@ -8,22 +11,28 @@ export async function handler(event) {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                    contents,
+                    contents: body.contents,
                     generationConfig: { temperature: 0.8 }
                 })
             }
         );
 
         const data = await response.json();
+        console.log("Gemini response:", data);
 
         return {
             statusCode: 200,
             body: JSON.stringify(data)
         };
+
     } catch (error) {
+        console.error("ERROR:", error);
+
         return {
             statusCode: 500,
-            body: JSON.stringify({ error: "Server error", details: error.message })
+            body: JSON.stringify({
+                error: error.message
+            })
         };
     }
 }
