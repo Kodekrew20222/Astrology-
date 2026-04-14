@@ -1,9 +1,11 @@
-export async function handler(event) {
-    console.log("Function triggered");
-
+exports.handler = async function (event) {
     try {
+        console.log("Function triggered");
+
         const body = JSON.parse(event.body);
-        console.log("Incoming body:", body);
+        console.log("Incoming:", body);
+
+        console.log("API KEY:", process.env.GEMINI_API_KEY);
 
         const response = await fetch(
             `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${process.env.GEMINI_API_KEY}`,
@@ -18,7 +20,7 @@ export async function handler(event) {
         );
 
         const data = await response.json();
-        console.log("Gemini response:", data);
+        console.log("Gemini Response:", data);
 
         return {
             statusCode: 200,
@@ -35,4 +37,4 @@ export async function handler(event) {
             })
         };
     }
-}
+};

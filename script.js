@@ -6,20 +6,8 @@ let isAutoSpeak = true;
 let userProfile = {};
 
 const now = new Date();
-
-const formattedDateTime = now.toLocaleString("en-IN", {
-    weekday: "long",
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit"
-});
-
 const chatContainer = document.getElementById('chat-container');
 const questionInput = document.getElementById('userQuestion');
-
 const avatarVideo = document.getElementById('avatar-video');
 
 // 1. Navigation from Setup to Chat
@@ -43,6 +31,17 @@ document.getElementById('start-chat').onclick = () => {
 const sendMessage = async () => {
     const text = questionInput.value.trim();
     if (!text) return;
+
+    const now = new Date();
+    const formattedDateTime = now.toLocaleString("en-IN", {
+        weekday: "long",
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit"
+    });
 
     // Show User Message
     appendMessage(text, 'user-msg');
@@ -77,19 +76,32 @@ const sendMessage = async () => {
 
         const data = await response.json();
 
-        // REMOVE LOADING INDICATOR
+        // Remove loader
         document.getElementById(loadingId).remove();
 
-        if (data.candidates && data.candidates[0].content) {
+        // ✅ HANDLE ERRORS (FIXES SILENT FAIL)
+        if (data.error) {
+            console.log("API ERROR:", data.error);
+            appendMessage("⚠️ " + data.error.message, "ai-msg");
+            return;
+        }
+
+        if (data.candidates && data.candidates.length > 0) {
             const aiText = data.candidates[0].content.parts[0].text.replace(/[*#]/g, '');
 
             appendMessage(aiText, 'ai-msg');
             chatHistory.push({ role: "model", parts: [{ text: aiText }] });
 
             if (isAutoSpeak) speak(aiText);
+        } else {
+            console.log("UNKNOWN RESPONSE:", data);
+            appendMessage("⚠️ No response generated. Try again.", "ai-msg");
         }
+
     } catch (err) {
-        document.getElementById(loadingId).innerHTML = "The connection to the stars was lost. Try again.";
+        console.error("FETCH ERROR:", err);
+        document.getElementById(loadingId).innerHTML =
+            "⚠️ Connection lost. Try again.";
     }
 };
 
