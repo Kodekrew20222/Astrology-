@@ -1,0 +1,8 @@
+# Optional Codex metadata — see https://developers.openai.com/codex/skills
+interface:
+  display_name: "Caveman"
+  short_description: "Ultra-compressed replies; keep technical accuracy."
+  default_prompt: "Follow the caveman skill: terse style, full technical substance."
+
+policy:
+  allow_implicit_invocation: true

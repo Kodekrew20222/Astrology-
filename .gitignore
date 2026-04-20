@@ -24,6 +24,7 @@ coverage/
 .idea/
 .vscode/
 
-.agents/
+# Local plugin marketplace only; repo skills live in .agents/skills/ for Codex
+.agents/plugins/
 .codex/
 .codex-plugins/
