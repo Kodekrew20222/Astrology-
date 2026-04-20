@@ -1,15 +1,34 @@
 import { OrbitControls, useGLTF } from '@react-three/drei'
-import { Canvas } from '@react-three/fiber'
-import { useEffect, useMemo } from 'react'
-import type { Mesh, Object3D } from 'three'
+import { Canvas, useThree } from '@react-three/fiber'
+import { useEffect, useMemo, useRef } from 'react'
+import { Box3, PerspectiveCamera, Vector3 } from 'three'
+import type { Group, Mesh, Object3D } from 'three'
 import { useAvatarFaceController } from '../hooks/useAvatarFaceController'
 
 const MODEL_PATH = '/models/astrologer-poc.glb'
-const FACE_MESH_CANDIDATES = ['Face (merged).baked', 'Face', 'face']
+const FACE_MESH_PREFIXES = ['Face_(merged)baked', 'Face', 'face']
 
-function findMorphMesh(root: Object3D): Mesh | null {
-  let namedMatch: Mesh | null = null
-  let firstMorphMesh: Mesh | null = null
+// Some WebKit builds will briefly show GLB textures and then lose them when
+// GLTFLoader chooses ImageBitmapLoader. For this isolated POC we prefer the
+// more stable TextureLoader path on Safari-like browsers.
+if (typeof window !== 'undefined' && typeof navigator !== 'undefined') {
+  const userAgent = navigator.userAgent
+  const isSafariLike =
+    /Safari/i.test(userAgent) &&
+    !/Chrome|Chromium|Android/i.test(userAgent)
+
+  if (isSafariLike && 'createImageBitmap' in window) {
+    Object.defineProperty(window, 'createImageBitmap', {
+      configurable: true,
+      value: undefined,
+      writable: true,
+    })
+  }
+}
+
+function findMorphMeshes(root: Object3D): Mesh[] {
+  const namedMatches: Mesh[] = []
+  const allMorphMeshes: Mesh[] = []
 
   root.traverse((child) => {
     const mesh = child as Mesh
@@ -20,16 +39,14 @@ function findMorphMesh(root: Object3D): Mesh | null {
     console.log('Mesh with morphs:', mesh.name || '(unnamed)')
     console.log('Morph targets:', mesh.morphTargetDictionary)
 
-    if (!firstMorphMesh) {
-      firstMorphMesh = mesh
-    }
+    allMorphMeshes.push(mesh)
 
-    if (FACE_MESH_CANDIDATES.includes(mesh.name)) {
-      namedMatch = mesh
+    if (FACE_MESH_PREFIXES.some((prefix) => mesh.name.startsWith(prefix))) {
+      namedMatches.push(mesh)
     }
   })
 
-  return namedMatch ?? firstMorphMesh
+  return namedMatches.length > 0 ? namedMatches : allMorphMeshes
 }
 
 function AvatarModel({
@@ -38,19 +55,66 @@ function AvatarModel({
   onMorphsDetected: ReturnType<typeof useAvatarFaceController>
 }) {
   const { scene } = useGLTF(MODEL_PATH)
+  const sceneGroupRef = useRef<Group>(null)
 
   useEffect(() => {
-    const faceMesh = findMorphMesh(scene)
-    onMorphsDetected.attachFaceMesh(faceMesh)
+    const faceMeshes = findMorphMeshes(scene)
+    onMorphsDetected.attachFaceMeshes(faceMeshes)
 
-    if (faceMesh) {
-      console.log('Using face mesh:', faceMesh.name || '(unnamed)')
+    if (faceMeshes.length > 0) {
+      console.log(
+        'Using face meshes:',
+        faceMeshes.map((mesh) => mesh.name || '(unnamed)'),
+      )
     } else {
       console.warn('No mesh with morph targets found in model.')
     }
   }, [onMorphsDetected, scene])
 
-  return <primitive object={scene} position={[0, -1.4, 0]} />
+  return (
+    <group ref={sceneGroupRef}>
+      <FitCameraToModel modelRoot={sceneGroupRef} />
+      <primitive object={scene} />
+    </group>
+  )
+}
+
+function FitCameraToModel({
+  modelRoot,
+}: {
+  modelRoot: React.RefObject<Group | null>
+}) {
+  const { camera, invalidate } = useThree()
+
+  useEffect(() => {
+    if (!modelRoot.current) {
+      return
+    }
+
+    if (!(camera instanceof PerspectiveCamera)) {
+      return
+    }
+
+    const box = new Box3().setFromObject(modelRoot.current)
+    if (box.isEmpty()) {
+      return
+    }
+
+    const size = box.getSize(new Vector3())
+    const center = box.getCenter(new Vector3())
+    const maxDim = Math.max(size.x, size.y, size.z)
+    const fov = (camera.fov * Math.PI) / 180
+    const distance = maxDim / (2 * Math.tan(fov / 2))
+
+    camera.position.set(center.x, center.y, center.z + distance * 1.45)
+    camera.near = Math.max(0.01, distance / 100)
+    camera.far = Math.max(100, distance * 100)
+    camera.lookAt(center)
+    camera.updateProjectionMatrix()
+    invalidate()
+  }, [camera, invalidate, modelRoot])
+
+  return null
 }
 
 function ControlButton({
@@ -77,12 +141,17 @@ export function TalkingAvatar() {
   return (
     <div className="avatar-test-layout">
       <div className="canvas-panel">
-        <Canvas camera={{ position: [0, 1.4, 2.2], fov: 30 }}>
+        <Canvas
+          camera={{ position: [0, 1.4, 2.2], fov: 30 }}
+          onCreated={({ gl }) => {
+            gl.setClearColor('#111111')
+          }}
+        >
           <color attach="background" args={['#111111']} />
           <ambientLight intensity={1.2} />
           <directionalLight position={[2, 3, 2]} intensity={2} />
           <AvatarModel onMorphsDetected={controller} />
-          <OrbitControls enablePan={false} />
+          <OrbitControls enablePan={false} makeDefault />
         </Canvas>
       </div>
 

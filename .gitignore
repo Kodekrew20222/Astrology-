@@ -23,3 +23,7 @@ coverage/
 
 .idea/
 .vscode/
+
+.agents/
+.codex/
+.codex-plugins/

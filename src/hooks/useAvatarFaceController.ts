@@ -32,48 +32,58 @@ function setMorphValue(mesh: Mesh | null, name: string, value: number) {
 }
 
 export function useAvatarFaceController() {
-  const faceMeshRef = useRef<Mesh | null>(null)
+  const faceMeshesRef = useRef<Mesh[]>([])
   const blinkTimeoutRef = useRef<number | null>(null)
   const [availableMorphs, setAvailableMorphs] = useState<string[]>([])
 
-  const attachFaceMesh = useCallback((mesh: Mesh | null) => {
-    faceMeshRef.current = mesh
+  const attachFaceMeshes = useCallback((meshes: Mesh[]) => {
+    faceMeshesRef.current = meshes
 
-    const morphs = mesh?.morphTargetDictionary
-      ? Object.keys(mesh.morphTargetDictionary).sort()
+    const morphs = meshes[0]?.morphTargetDictionary
+      ? Object.keys(meshes[0].morphTargetDictionary).sort()
       : []
 
     setAvailableMorphs(morphs)
   }, [])
 
   const setRawMorph = useCallback((name: string, weight: number) => {
-    return setMorphValue(faceMeshRef.current, name, weight)
+    let updated = false
+
+    faceMeshesRef.current.forEach((mesh) => {
+      updated = setMorphValue(mesh, name, weight) || updated
+    })
+
+    return updated
   }, [])
 
   const resetMouth = useCallback(() => {
     Object.values(visemeToMorph).forEach((morphName) => {
-      setMorphValue(faceMeshRef.current, morphName, 0)
+      faceMeshesRef.current.forEach((mesh) => {
+        setMorphValue(mesh, morphName, 0)
+      })
     })
   }, [])
 
   const resetExpressions = useCallback(() => {
     Object.values(expressionToMorph).forEach((morphName) => {
-      setMorphValue(faceMeshRef.current, morphName, 0)
+      faceMeshesRef.current.forEach((mesh) => {
+        setMorphValue(mesh, morphName, 0)
+      })
     })
   }, [])
 
   const setViseme = useCallback((name: VisemeName, weight: number) => {
     resetMouth()
-    return setMorphValue(faceMeshRef.current, visemeToMorph[name], weight)
-  }, [resetMouth])
+    return setRawMorph(visemeToMorph[name], weight)
+  }, [resetMouth, setRawMorph])
 
   const setExpression = useCallback((name: ExpressionName, weight: number) => {
     resetExpressions()
-    return setMorphValue(faceMeshRef.current, expressionToMorph[name], weight)
-  }, [resetExpressions])
+    return setRawMorph(expressionToMorph[name], weight)
+  }, [resetExpressions, setRawMorph])
 
   const blink = useCallback((durationMs = 180) => {
-    if (!setMorphValue(faceMeshRef.current, 'Fcl_EYE_Close', 1)) {
+    if (!setRawMorph('Fcl_EYE_Close', 1)) {
       return false
     }
 
@@ -82,11 +92,11 @@ export function useAvatarFaceController() {
     }
 
     blinkTimeoutRef.current = window.setTimeout(() => {
-      setMorphValue(faceMeshRef.current, 'Fcl_EYE_Close', 0)
+      setRawMorph('Fcl_EYE_Close', 0)
     }, durationMs)
 
     return true
-  }, [])
+  }, [setRawMorph])
 
   useEffect(() => {
     return () => {
@@ -97,7 +107,7 @@ export function useAvatarFaceController() {
   }, [])
 
   return {
-    attachFaceMesh,
+    attachFaceMeshes,
     availableMorphs,
     blink,
     resetExpressions,
