@@ -3,8 +3,8 @@ import { OrbitControls } from '@react-three/drei'
 import { Canvas, useThree } from '@react-three/fiber'
 import {
   type ErrorInfo,
+  type FormEvent,
   type ReactNode,
-  type KeyboardEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -23,15 +23,13 @@ import {
 const MODEL_PATH = '/models/astrologer-poc.glb'
 const FACE_MESH_PREFIXES = ['Face_(merged)baked', 'Face', 'face']
 const MODEL_Y_ROTATION = Math.PI
-const SAMPLE_LIP_SYNC_PHRASES = [
-  'mercury retrograde',
-  'saturn return',
-  'moon in scorpio',
-  'venus in taurus',
-  'birth chart reading',
-  'lunar eclipse',
-]
 const MIN_FACE_FRAME_PADDING = new Vector3(0.08, 0.14, 0.16)
+const GEMINI_CHAT_ENDPOINT = '/.netlify/functions/gemini'
+const DEFAULT_VOICE_ENDPOINT =
+  import.meta.env.VITE_VOICE_ENDPOINT || 'http://127.0.0.1:8020/speak'
+const DEFAULT_VOICE_NAME = import.meta.env.VITE_VOICE_NAME || 'hi-IN-MadhurNeural'
+const ASSISTANT_SPEECH_FLUSH_PATTERN = /([.!?;:]\s+|\n+)/
+const MAX_STREAMING_SPEECH_BUFFER_LENGTH = 96
 
 const CLOSED_MOUTH: VisemeWeights = {}
 const OPEN_A: VisemeWeights = { A: 0.9, E: 0.14 }
@@ -54,6 +52,24 @@ type PhonemeRecipe = {
   patterns: string[]
   smoothingMs?: number
   weights: VisemeWeights
+}
+
+type ChatRole = 'assistant' | 'user'
+type ChatMessage = {
+  content: string
+  id: string
+  role: ChatRole
+}
+type RhubarbMouthCue = {
+  end: number
+  start: number
+  value: string
+}
+type VoiceWithCuesResponse = {
+  audioBase64: string
+  contentType: string
+  mouthCues: RhubarbMouthCue[]
+  voice: string
 }
 
 // Some WebKit builds will briefly show GLB textures and then lose them when
@@ -321,6 +337,99 @@ function buildLipSyncCues(text: string): LipSyncCue[] {
 
   appendCue(cues, createCue(120, CLOSED_MOUTH, 58))
   return cues
+}
+
+function getVoiceCuesEndpoint(endpoint: string) {
+  return endpoint.replace(/\/speak\/?$/, '/speak-with-cues')
+}
+
+function base64ToBlob(base64: string, contentType: string) {
+  const binaryString = window.atob(base64)
+  const bytes = new Uint8Array(binaryString.length)
+
+  for (let index = 0; index < binaryString.length; index += 1) {
+    bytes[index] = binaryString.charCodeAt(index)
+  }
+
+  return new Blob([bytes], { type: contentType })
+}
+
+function getRhubarbWeights(value: string): VisemeWeights {
+  switch (value) {
+    case 'B':
+      return { A: 0.08 }
+    case 'C':
+      return { E: 0.62, I: 0.48 }
+    case 'D':
+      return { A: 0.92, E: 0.12 }
+    case 'E':
+      return { O: 0.84 }
+    case 'F':
+      return { U: 0.9, O: 0.22 }
+    case 'G':
+      return { E: 0.34, I: 0.18, U: 0.2 }
+    case 'H':
+      return { E: 0.52, I: 0.34 }
+    case 'A':
+    case 'X':
+    default:
+      return CLOSED_MOUTH
+  }
+}
+
+function buildRhubarbLipSyncCues(mouthCues: RhubarbMouthCue[]): LipSyncCue[] {
+  const cues: LipSyncCue[] = []
+  let cursorSeconds = 0
+
+  mouthCues.forEach((mouthCue) => {
+    const start = Math.max(0, mouthCue.start)
+    const end = Math.max(start, mouthCue.end)
+
+    if (start > cursorSeconds + 0.012) {
+      cues.push(createCue(Math.round((start - cursorSeconds) * 1000), CLOSED_MOUTH, 20))
+    }
+
+    cues.push(createCue(
+      Math.max(24, Math.round((end - start) * 1000)),
+      getRhubarbWeights(mouthCue.value),
+      18,
+    ))
+    cursorSeconds = end
+  })
+
+  cues.push(createCue(80, CLOSED_MOUTH, 24))
+  return cues
+}
+
+function getCueDurationMs(cues: LipSyncCue[]) {
+  return cues.reduce((totalMs, cue) => totalMs + cue.durationMs, 0)
+}
+
+function waitForAudioMetadata(audio: HTMLAudioElement) {
+  if (Number.isFinite(audio.duration) && audio.duration > 0) {
+    return Promise.resolve(audio.duration)
+  }
+
+  return new Promise<number>((resolve, reject) => {
+    const handleLoadedMetadata = () => {
+      cleanup()
+      resolve(audio.duration)
+    }
+
+    const handleError = () => {
+      cleanup()
+      reject(new Error('Audio metadata failed to load.'))
+    }
+
+    const cleanup = () => {
+      audio.removeEventListener('loadedmetadata', handleLoadedMetadata)
+      audio.removeEventListener('error', handleError)
+    }
+
+    audio.addEventListener('loadedmetadata', handleLoadedMetadata, { once: true })
+    audio.addEventListener('error', handleError, { once: true })
+    audio.load()
+  })
 }
 
 function useAvatarGLTF(addLog: LogFn): LoadedGLTFState {
@@ -650,30 +759,52 @@ function FitCameraToModel({
   return null
 }
 
-function ControlButton({
-  label,
-  onClick,
-}: {
-  label: string
-  onClick: () => void
-}) {
-  return (
-    <button className="control-button" onClick={onClick} type="button">
-      {label}
-    </button>
-  )
-}
-
 export function TalkingAvatar() {
   const controller = useAvatarFaceController()
   const { addLog, logs } = useAvatarDebugLog()
-  const [speechInput, setSpeechInput] = useState('hello there')
+  const [draftMessage, setDraftMessage] = useState('')
+  const [messages, setMessages] = useState<ChatMessage[]>([
+    {
+      content: 'Welcome. Ask for a reading and I will speak the answer as it streams in.',
+      id: 'welcome',
+      role: 'assistant',
+    },
+  ])
+  const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null)
+  const [chatError, setChatError] = useState('')
+  const [voiceEnabled, setVoiceEnabled] = useState(true)
+  const [voiceEndpoint, setVoiceEndpoint] = useState(DEFAULT_VOICE_ENDPOINT)
+  const [voiceName, setVoiceName] = useState(DEFAULT_VOICE_NAME)
+  const [voiceStatus, setVoiceStatus] = useState('Madhur voice is ready.')
+  const [voiceError, setVoiceError] = useState('')
   const morphSummary = useMemo(
     () => controller.availableMorphs.join(', '),
     [controller.availableMorphs],
   )
   const debugSummary = useMemo(() => logs.join('\n'), [logs])
   const canvasContainerRef = useRef<HTMLDivElement>(null)
+  const abortControllerRef = useRef<AbortController | null>(null)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const messagesRef = useRef(messages)
+  const objectUrlRef = useRef<string | null>(null)
+  const speechBufferRef = useRef('')
+
+  useEffect(() => {
+    messagesRef.current = messages
+  }, [messages])
+
+  const stopVoicePlayback = useCallback(() => {
+    if (audioRef.current) {
+      audioRef.current.pause()
+      audioRef.current.src = ''
+      audioRef.current = null
+    }
+
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current)
+      objectUrlRef.current = null
+    }
+  }, [])
 
   useEffect(() => {
     addLog(`Avatar test page mounted. userAgent=${navigator.userAgent}`)
@@ -692,8 +823,9 @@ export function TalkingAvatar() {
     return () => {
       window.removeEventListener('error', handleWindowError)
       window.removeEventListener('unhandledrejection', handleUnhandledRejection)
+      stopVoicePlayback()
     }
-  }, [addLog])
+  }, [addLog, stopVoicePlayback])
 
   useEffect(() => {
     let isCancelled = false
@@ -733,40 +865,310 @@ export function TalkingAvatar() {
     }
   }, [addLog])
 
-  const playLipSyncPreview = useCallback((text: string) => {
-    const trimmedText = text.trim()
-    const cues = buildLipSyncCues(trimmedText)
+  const appendAssistantSpeech = useCallback((text: string, force = false) => {
+    speechBufferRef.current += text
 
-    if (!trimmedText) {
-      addLog('Lip-sync preview skipped because the text box is empty')
+    let shouldFlush =
+      force ||
+      ASSISTANT_SPEECH_FLUSH_PATTERN.test(speechBufferRef.current) ||
+      speechBufferRef.current.length >= MAX_STREAMING_SPEECH_BUFFER_LENGTH
+
+    while (shouldFlush) {
+      const buffer = speechBufferRef.current
+      const sentenceBoundary = buffer.search(ASSISTANT_SPEECH_FLUSH_PATTERN)
+      const splitIndex =
+        sentenceBoundary >= 0
+          ? sentenceBoundary + 1
+          : buffer.lastIndexOf(' ', MAX_STREAMING_SPEECH_BUFFER_LENGTH)
+
+      if (!force && splitIndex <= 0) {
+        return
+      }
+
+      const spokenText =
+        splitIndex > 0 ? buffer.slice(0, splitIndex).trim() : buffer.trim()
+
+      speechBufferRef.current =
+        splitIndex > 0 ? buffer.slice(splitIndex).trimStart() : ''
+
+      if (spokenText) {
+        const cues = buildLipSyncCues(spokenText)
+        controller.enqueueVisemeSequence(cues, 'Gemini response')
+      }
+
+      shouldFlush =
+        force && speechBufferRef.current.trim().length > 0
+          ? true
+          : ASSISTANT_SPEECH_FLUSH_PATTERN.test(speechBufferRef.current) ||
+            speechBufferRef.current.length >= MAX_STREAMING_SPEECH_BUFFER_LENGTH
+    }
+  }, [controller])
+
+  const readGeminiStream = useCallback(async (
+    response: Response,
+    onText: (text: string) => void,
+  ) => {
+    if (!response.body) {
+      const data = await response.json()
+      const text = data?.candidates?.[0]?.content?.parts
+        ?.map((part: { text?: string }) => part.text ?? '')
+        .join('')
+
+      if (text) {
+        onText(text)
+      }
+
       return
     }
 
-    if (cues.length === 0) {
-      addLog(`Lip-sync preview skipped because "${trimmedText}" did not produce any speech cues`)
+    const decoder = new TextDecoder()
+    const reader = response.body.getReader()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) {
+        break
+      }
+
+      buffer += decoder.decode(value, { stream: true })
+      const events = buffer.split(/\n\n/)
+      buffer = events.pop() ?? ''
+
+      events.forEach((eventText) => {
+        const dataLines = eventText
+          .split('\n')
+          .filter((line) => line.startsWith('data:'))
+          .map((line) => line.replace(/^data:\s?/, '').trim())
+
+        dataLines.forEach((line) => {
+          if (!line || line === '[DONE]') {
+            return
+          }
+
+          try {
+            const data = JSON.parse(line)
+            const text = data?.candidates?.[0]?.content?.parts
+              ?.map((part: { text?: string }) => part.text ?? '')
+              .join('')
+
+            if (text) {
+              onText(text)
+            }
+          } catch (error) {
+            addLog(`Skipped malformed Gemini stream event: ${formatError(error)}`)
+          }
+        })
+      })
+    }
+
+    if (buffer.trim()) {
+      buffer
+        .split('\n')
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.replace(/^data:\s?/, '').trim())
+        .forEach((line) => {
+          try {
+            const data = JSON.parse(line)
+            const text = data?.candidates?.[0]?.content?.parts
+              ?.map((part: { text?: string }) => part.text ?? '')
+              .join('')
+
+            if (text) {
+              onText(text)
+            }
+          } catch {
+            // The final SSE buffer can contain a partial frame after an abort.
+          }
+        })
+    }
+  }, [addLog])
+
+  const playVoiceSpeech = useCallback(async (text: string) => {
+    const spokenText = text.trim()
+    if (!spokenText) {
       return
     }
 
-    const totalDurationMs = cues.reduce((total, cue) => total + cue.durationMs, 0)
-    controller.playVisemeSequence(cues, trimmedText)
-    addLog(
-      `Playing lip-sync preview for "${trimmedText}" with ${cues.length} blended cues over ${totalDurationMs}ms`,
-    )
-  }, [addLog, controller])
+    stopVoicePlayback()
+    setVoiceError('')
+    setVoiceStatus('Generating Madhur audio...')
 
-  const stopLipSyncPreview = useCallback(() => {
+    try {
+      const response = await fetch(getVoiceCuesEndpoint(voiceEndpoint), {
+        body: JSON.stringify({
+          text: spokenText,
+          voice: voiceName.trim() || DEFAULT_VOICE_NAME,
+        }),
+        headers: { 'Content-Type': 'application/json' },
+        method: 'POST',
+      })
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(errorText || `Voice request failed with ${response.status}`)
+      }
+
+      const voiceData = await response.json() as VoiceWithCuesResponse
+      const audioBlob = base64ToBlob(voiceData.audioBase64, voiceData.contentType)
+      const objectUrl = URL.createObjectURL(audioBlob)
+      const audio = new Audio(objectUrl)
+      objectUrlRef.current = objectUrl
+      audioRef.current = audio
+      const audioDurationSeconds = await waitForAudioMetadata(audio)
+
+      audio.addEventListener('ended', () => {
+        controller.stopSpeech()
+        stopVoicePlayback()
+        setVoiceStatus('Madhur voice is ready.')
+      }, { once: true })
+
+      audio.addEventListener('error', () => {
+        controller.stopSpeech()
+        stopVoicePlayback()
+        setVoiceStatus('Voice playback failed.')
+        setVoiceError('The browser could not play the returned audio.')
+      }, { once: true })
+
+      await audio.play()
+      const cues = buildRhubarbLipSyncCues(voiceData.mouthCues)
+      controller.playVisemeSequence(cues, 'Madhur audio')
+      setVoiceStatus('Playing Madhur audio.')
+      addLog(
+        `Playing voice speech (${audioBlob.size} bytes, audio=${audioDurationSeconds.toFixed(
+          2,
+        )}s, rhubarbCues=${voiceData.mouthCues.length}, cueDuration=${getCueDurationMs(
+          cues,
+        )}ms)`,
+      )
+    } catch (error) {
+      const message = formatError(error)
+      setVoiceStatus('Madhur voice failed.')
+      setVoiceError(message)
+      addLog(`Voice failed: ${message}`)
+    }
+  }, [
+    addLog,
+    controller,
+    stopVoicePlayback,
+    voiceEndpoint,
+    voiceName,
+  ])
+
+  const stopGeminiStream = useCallback(() => {
+    abortControllerRef.current?.abort()
+    abortControllerRef.current = null
+    speechBufferRef.current = ''
+    stopVoicePlayback()
     controller.stopSpeech()
-    addLog('Stopped lip-sync preview')
-  }, [addLog, controller])
+    setStreamingMessageId(null)
+    addLog('Stopped Gemini stream')
+  }, [addLog, controller, stopVoicePlayback])
 
-  const handleSpeechInputKeyDown = useCallback((event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key !== 'Enter') {
+  const sendMessage = useCallback(async (event?: FormEvent<HTMLFormElement>) => {
+    event?.preventDefault()
+
+    const prompt = draftMessage.trim()
+    if (!prompt || streamingMessageId) {
       return
     }
 
-    event.preventDefault()
-    playLipSyncPreview(speechInput)
-  }, [playLipSyncPreview, speechInput])
+    const userMessage: ChatMessage = {
+      content: prompt,
+      id: crypto.randomUUID(),
+      role: 'user',
+    }
+    const assistantMessage: ChatMessage = {
+      content: '',
+      id: crypto.randomUUID(),
+      role: 'assistant',
+    }
+    const nextMessages = [...messagesRef.current, userMessage, assistantMessage]
+    const abortController = new AbortController()
+
+    abortControllerRef.current = abortController
+    speechBufferRef.current = ''
+    setChatError('')
+    setDraftMessage('')
+    setMessages(nextMessages)
+    setStreamingMessageId(assistantMessage.id)
+    setVoiceError('')
+    controller.stopSpeech()
+    stopVoicePlayback()
+
+    const contents = nextMessages
+      .filter((message) => message.id !== assistantMessage.id)
+      .map((message) => ({
+        role: message.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: message.content }],
+      }))
+
+    try {
+      const response = await fetch(GEMINI_CHAT_ENDPOINT, {
+        body: JSON.stringify({ contents }),
+        headers: { 'Content-Type': 'application/json' },
+        method: 'POST',
+        signal: abortController.signal,
+      })
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(errorText || `Gemini request failed with ${response.status}`)
+      }
+
+      let fullAssistantText = ''
+      await readGeminiStream(response, (text) => {
+        fullAssistantText += text
+        setMessages((currentMessages) =>
+          currentMessages.map((message) =>
+            message.id === assistantMessage.id
+              ? { ...message, content: `${message.content}${text}` }
+            : message,
+          ),
+        )
+        if (!voiceEnabled) {
+          appendAssistantSpeech(text)
+        }
+      })
+
+      if (voiceEnabled) {
+        await playVoiceSpeech(fullAssistantText)
+      } else {
+        appendAssistantSpeech('', true)
+      }
+      addLog(`Completed Gemini stream for prompt "${prompt}"`)
+    } catch (error) {
+      if (abortController.signal.aborted) {
+        return
+      }
+
+      const message = formatError(error)
+      setChatError(message)
+      setMessages((currentMessages) =>
+        currentMessages.map((chatMessage) =>
+          chatMessage.id === assistantMessage.id && !chatMessage.content
+            ? { ...chatMessage, content: 'I could not complete that response.' }
+            : chatMessage,
+        ),
+      )
+      addLog(`Gemini stream failed: ${message}`)
+    } finally {
+      if (abortControllerRef.current === abortController) {
+        abortControllerRef.current = null
+      }
+      setStreamingMessageId(null)
+    }
+  }, [
+    appendAssistantSpeech,
+    controller,
+    draftMessage,
+    playVoiceSpeech,
+    readGeminiStream,
+    streamingMessageId,
+    addLog,
+    stopVoicePlayback,
+    voiceEnabled,
+  ])
 
   return (
     <div className="avatar-test-layout">
@@ -810,97 +1212,109 @@ export function TalkingAvatar() {
 
       <div className="control-panel">
         <div>
-          <p className="eyebrow">Standalone POC</p>
-          <h1>Avatar Face Rig Test</h1>
+          <p className="eyebrow">Live Gemini Avatar</p>
+          <h1>Astrology Chat</h1>
           <p className="panel-copy">
-            This page stays isolated from the chat flow so we can confirm the
-            face rig before adding speech, streaming, or Gemini. The camera now
-            frames the face first so lip-sync is readable as soon as the model loads.
+            Gemini responses stream directly into the avatar face rig. As text arrives,
+            the model queues matching mouth shapes, pauses, and closures so the face
+            speaks along with the answer instead of waiting for the full response.
           </p>
         </div>
 
-        <div className="control-group">
-          <h2>Word Preview</h2>
-          <p className="morph-status">
-            {controller.isSpeaking
-              ? `Playing "${controller.activeSpeechLabel}" with blended visemes, closures, and pauses.`
-              : 'Type a short word or phrase to preview smoother speech timing and viseme blending.'}
-          </p>
-          <input
-            className="word-input"
-            onChange={(event) => setSpeechInput(event.target.value)}
-            onKeyDown={handleSpeechInputKeyDown}
-            placeholder="Type a short phrase"
-            type="text"
-            value={speechInput}
-          />
-          <div className="button-row">
-            {SAMPLE_LIP_SYNC_PHRASES.map((phrase) => (
-              <ControlButton
-                key={phrase}
-                label={phrase}
-                onClick={() => {
-                  setSpeechInput(phrase)
-                  playLipSyncPreview(phrase)
-                }}
-              />
+        <section className="chat-shell" aria-label="Gemini astrology chat">
+          <div className="chat-messages">
+            {messages.map((message) => (
+              <article className={`chat-message ${message.role}`} key={message.id}>
+                <p>{message.content || '...'}</p>
+              </article>
             ))}
           </div>
-          <div className="button-row">
-            <ControlButton label="Play Phrase" onClick={() => playLipSyncPreview(speechInput)} />
-            <ControlButton label="Stop Preview" onClick={stopLipSyncPreview} />
-          </div>
-        </div>
 
-        <div className="control-group">
-          <h2>Visemes</h2>
-          <div className="button-row">
-            <ControlButton label="A" onClick={() => controller.setViseme('A', 1)} />
-            <ControlButton label="I" onClick={() => controller.setViseme('I', 1)} />
-            <ControlButton label="U" onClick={() => controller.setViseme('U', 1)} />
-            <ControlButton label="E" onClick={() => controller.setViseme('E', 1)} />
-            <ControlButton label="O" onClick={() => controller.setViseme('O', 1)} />
-            <ControlButton label="Reset Mouth" onClick={controller.resetMouth} />
-          </div>
-        </div>
+          {chatError ? <p className="chat-error">{chatError}</p> : null}
+          {voiceError ? <p className="chat-error">{voiceError}</p> : null}
 
-        <div className="control-group">
-          <h2>Expressions</h2>
-          <div className="button-row">
-            <ControlButton label="Blink" onClick={() => controller.blink()} />
-            <ControlButton label="Joy" onClick={() => controller.setExpression('Joy', 1)} />
-            <ControlButton
-              label="Angry"
-              onClick={() => controller.setExpression('Angry', 1)}
-            />
-            <ControlButton
-              label="Reset Face"
-              onClick={() => {
-                controller.resetExpressions()
-                controller.resetMouth()
-                controller.setRawMorph('Fcl_EYE_Close', 0)
+          <form className="chat-composer" onSubmit={sendMessage}>
+            <textarea
+              className="chat-input"
+              disabled={Boolean(streamingMessageId)}
+              onChange={(event) => setDraftMessage(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !event.shiftKey) {
+                  event.preventDefault()
+                  event.currentTarget.form?.requestSubmit()
+                }
               }}
+              placeholder="Ask about your chart, transit, or compatibility"
+              rows={4}
+              value={draftMessage}
             />
-          </div>
-        </div>
+            <div className="composer-actions">
+              <span className="morph-status">
+                {streamingMessageId
+                  ? 'Gemini is streaming to the avatar.'
+                  : controller.isSpeaking
+                    ? `Speaking "${controller.activeSpeechLabel}"`
+                    : 'Ready for a question.'}
+              </span>
+              {streamingMessageId ? (
+                <button className="control-button secondary" onClick={stopGeminiStream} type="button">
+                  Stop
+                </button>
+              ) : (
+                <button className="control-button" disabled={!draftMessage.trim()} type="submit">
+                  Send
+                </button>
+              )}
+            </div>
+          </form>
+        </section>
 
-        <div className="control-group">
-          <h2>Morph Target Discovery</h2>
+        <section className="control-group voice-controls" aria-label="Madhur voice controls">
+          <label className="toggle-row">
+            <input
+              checked={voiceEnabled}
+              onChange={(event) => {
+                const enabled = event.target.checked
+                setVoiceEnabled(enabled)
+                setVoiceStatus(enabled ? 'Madhur voice is ready.' : 'Madhur voice is off.')
+                if (!enabled) {
+                  stopVoicePlayback()
+                }
+              }}
+              type="checkbox"
+            />
+            <span>Madhur voice</span>
+          </label>
+
+          <input
+            className="word-input"
+            disabled={Boolean(streamingMessageId)}
+            onChange={(event) => setVoiceEndpoint(event.target.value)}
+            placeholder="Voice endpoint"
+            value={voiceEndpoint}
+          />
+          <input
+            className="word-input"
+            disabled={Boolean(streamingMessageId)}
+            onChange={(event) => setVoiceName(event.target.value)}
+            placeholder="Voice name"
+            value={voiceName}
+          />
+          <div className="voice-row">
+            <span className="morph-status">{voiceStatus}</span>
+          </div>
+        </section>
+
+        <details className="control-group diagnostics">
+          <summary>Avatar Diagnostics</summary>
           <p className="morph-status">
             {controller.availableMorphs.length > 0
               ? `Detected ${controller.availableMorphs.length} morph targets.`
               : `No morph targets detected yet. Put your model at ${MODEL_PATH} and open the page.`}
           </p>
           <textarea className="morph-log" readOnly value={morphSummary} />
-        </div>
-
-        <div className="control-group">
-          <h2>Loader Debug Log</h2>
-          <p className="morph-status">
-            Refresh the page and watch this panel to see where loading stops or errors.
-          </p>
           <textarea className="morph-log" readOnly value={debugSummary} />
-        </div>
+        </details>
       </div>
     </div>
   )

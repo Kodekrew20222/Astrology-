@@ -4,7 +4,13 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node tools/local_dev.js",
+    "dev:api": "node tools/local_functions_server.js",
+    "dev:netlify": "npx netlify-cli dev",
+    "dev:vite": "vite --host 127.0.0.1",
+    "voice": ".venv-voice/bin/python tools/voice_server.py",
+    "voice:install": "uv pip install --python .venv-voice/bin/python -r requirements-voice.txt",
+    "voice:venv": "uv venv --python 3.11 --clear .venv-voice",
     "build": "tsc -b && vite build",
     "preview": "vite preview"
   },

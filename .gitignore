@@ -19,6 +19,12 @@ pnpm-debug.log*
 .vite/
 coverage/
 
+.venv-xtts/
+.venv-voice/
+local-voices/
+generated-audio/
+tools/rhubarb/
+
 *.tsbuildinfo
 
 .idea/
@@ -28,3 +34,6 @@ coverage/
 .agents/plugins/
 .codex/
 .codex-plugins/
+
+# Local Netlify folder
+.netlify

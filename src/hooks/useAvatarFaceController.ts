@@ -80,6 +80,12 @@ function resolveCue(cue: LipSyncCue): Required<LipSyncCue> {
   }
 }
 
+function resolveCues(cues: LipSyncCue[]) {
+  return cues
+    .filter((cue) => cue.durationMs > 0)
+    .map(resolveCue)
+}
+
 function interpolateWeight(current: number, target: number, deltaMs: number, smoothingMs: number) {
   const blend = 1 - Math.exp(-deltaMs / smoothingMs)
   return current + (target - current) * blend
@@ -189,9 +195,7 @@ export function useAvatarFaceController() {
   const playVisemeSequence = useCallback((cues: LipSyncCue[], label = 'Preview') => {
     clearSpeechAnimation()
 
-    const resolvedCues = cues
-      .filter((cue) => cue.durationMs > 0)
-      .map(resolveCue)
+    const resolvedCues = resolveCues(cues)
 
     if (resolvedCues.length === 0) {
       applyVisemeWeights()
@@ -259,6 +263,31 @@ export function useAvatarFaceController() {
     return true
   }, [applyVisemeWeights, clearSpeechAnimation, stopSpeech])
 
+  const enqueueVisemeSequence = useCallback((cues: LipSyncCue[], label = 'Assistant') => {
+    const resolvedCues = resolveCues(cues)
+
+    if (resolvedCues.length === 0) {
+      return false
+    }
+
+    const activePlan = speechPlanRef.current
+    if (!activePlan) {
+      return playVisemeSequence(cues, label)
+    }
+
+    resolvedCues.forEach((cue) => {
+      activePlan.totalDurationMs += cue.durationMs
+      activePlan.cueEndTimes.push(activePlan.totalDurationMs)
+      activePlan.cues.push(cue)
+    })
+
+    activePlan.label = label
+    setActiveSpeechLabel(label)
+    setIsSpeaking(true)
+
+    return true
+  }, [playVisemeSequence])
+
   useEffect(() => {
     return () => {
       if (blinkTimeoutRef.current) {
@@ -275,6 +304,7 @@ export function useAvatarFaceController() {
     attachFaceMeshes,
     availableMorphs,
     blink,
+    enqueueVisemeSequence,
     isSpeaking,
     playVisemeSequence,
     resetExpressions,
